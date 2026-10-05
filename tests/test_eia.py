@@ -175,3 +175,105 @@ def test_fetched_at_is_shared_across_the_call():
     )
     rows = eia.fetch_demand("CISO", START, END, api_key="fake")
     assert len({r["fetched_at"] for r in rows}) == 1
+
+
+# ---------------------------------------------------------------------------
+# Subregion route. The CAISO sub-areas are only available here - `region-data`
+# returns an empty result for them rather than an error, which would look like
+# "no data exists" and quietly break the hierarchical model.
+# ---------------------------------------------------------------------------
+
+
+def _sub_row(hour: int, subba: str, value: object = "12000") -> dict:
+    return {
+        "period": f"2024-06-01T{hour:02d}",
+        "parent": "CISO",
+        "subba": subba,
+        "value": value,
+    }
+
+
+@responses.activate
+def test_subba_uses_the_subregion_route_and_facets():
+    responses.add(
+        responses.GET, eia.SUBBA_URL, json=_page([_sub_row(0, "PGAE")], total=1), status=200
+    )
+    eia.fetch_subba_demand("CISO", START, END, api_key="fake")
+    request = responses.calls[0].request
+    assert eia.SUBBA_URL in request.url
+    assert request.params["facets[parent][]"] == "CISO"
+    assert "facets[respondent][]" not in request.params
+    # This route publishes demand only - there is no type facet to send.
+    assert "facets[type][]" not in request.params
+
+
+@responses.activate
+def test_subba_deduplicates_on_subba_and_period_not_period_alone():
+    """One period carries one row per subregion. Deduplicating on period would throw
+    away three of every four rows."""
+    rows = [_sub_row(0, s) for s in ("PGAE", "SCE", "SDGE", "VEA")]
+    responses.add(responses.GET, eia.SUBBA_URL, json=_page(rows, total=4), status=200)
+    out = eia.fetch_subba_demand("CISO", START, END, api_key="fake")
+    assert len(out) == 4
+    assert {r["region"] for r in out} == {"PGAE", "SCE", "SDGE", "VEA"}
+    assert {r["period_utc"] for r in out} == {datetime(2024, 6, 1, 0, tzinfo=UTC)}
+
+
+@responses.activate
+def test_subba_tags_parent_for_the_mint_summation_matrix():
+    responses.add(
+        responses.GET, eia.SUBBA_URL, json=_page([_sub_row(0, "SCE")], total=1), status=200
+    )
+    out = eia.fetch_subba_demand("CISO", START, END, api_key="fake")
+    assert out[0]["parent_region"] == "CISO"
+    assert out[0]["region"] == "SCE"
+
+
+@responses.activate
+def test_subba_filter_narrows_to_requested_subregions():
+    responses.add(
+        responses.GET, eia.SUBBA_URL, json=_page([_sub_row(0, "SCE")], total=1), status=200
+    )
+    eia.fetch_subba_demand("CISO", START, END, subbas=["SCE", "SDGE"], api_key="fake")
+    params = responses.calls[0].request.params
+    assert params["facets[subba][0]"] == "SCE"
+    assert params["facets[subba][1]"] == "SDGE"
+
+
+@responses.activate
+def test_subba_sorted_by_period_then_subregion():
+    rows = [_sub_row(1, "SCE"), _sub_row(0, "VEA"), _sub_row(0, "PGAE")]
+    responses.add(responses.GET, eia.SUBBA_URL, json=_page(rows, total=3), status=200)
+    out = eia.fetch_subba_demand("CISO", START, END, api_key="fake")
+    assert [(r["period_utc"].hour, r["region"]) for r in out] == [
+        (0, "PGAE"),
+        (0, "VEA"),
+        (1, "SCE"),
+    ]
+
+
+@pytest.mark.network
+def test_live_subba_returns_all_four_caiso_subareas(eia_key):
+    rows = eia.fetch_subba_demand(
+        "CISO", datetime(2024, 7, 1, 0, tzinfo=UTC), datetime(2024, 7, 1, 23, tzinfo=UTC)
+    )
+    assert len(rows) == 96, "expected 24 hours x 4 subregions"
+    assert {r["region"] for r in rows} == {"PGAE", "SCE", "SDGE", "VEA"}
+
+
+@pytest.mark.network
+def test_live_hierarchy_is_coherent(eia_key):
+    """The sum of subregions should equal the parent total. MinT reconciliation assumes
+    this structure; if EIA's published values disagreed materially, the coherence
+    constraint would be imposing a relationship the data does not have."""
+    window = (datetime(2024, 7, 1, 0, tzinfo=UTC), datetime(2024, 7, 1, 23, tzinfo=UTC))
+    subs = eia.fetch_subba_demand("CISO", *window)
+    totals = {r["period_utc"]: r["demand_mw"] for r in eia.fetch_demand("CISO", *window)}
+
+    summed: dict[datetime, float] = {}
+    for row in subs:
+        if row["demand_mw"] is not None:
+            summed[row["period_utc"]] = summed.get(row["period_utc"], 0.0) + row["demand_mw"]
+
+    worst = max(abs(summed[p] - totals[p]) / totals[p] for p in summed if totals.get(p))
+    assert worst < 0.01, f"subregions disagree with parent by {worst:.2%}"

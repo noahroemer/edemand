@@ -40,6 +40,12 @@ from ingest.timeutils import format_eia_period, parse_eia_period, require_utc
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
+"""Balancing-authority level: facets `respondent` and `type`."""
+
+SUBBA_URL = "https://api.eia.gov/v2/electricity/rto/region-sub-ba-data/data/"
+"""Subregion level: facets `parent` and `subba`, demand only, no `type`. The CAISO
+sub-areas in CLAUDE.md section 4 are only available here - `region-data` returns an empty
+result for them, not an error."""
 
 MAX_ROWS_PER_REQUEST = 5000
 """EIA's documented JSON ceiling. Requesting more is silently truncated, which would look
@@ -78,9 +84,14 @@ def _session(retries: int = 4) -> requests.Session:
 def resolve_api_key(explicit: str | None = None) -> str:
     """Return the API key, preferring an explicit argument over EIA_API_KEY.
 
-    Raises with the registration URL rather than letting the request fail as an opaque 403.
+    Strips surrounding quotes and whitespace. `.env` files do not require quoting, but
+    pasting a quoted value is an easy mistake and the symptom is a bare 403 that looks
+    like an invalid key rather than a formatting problem. python-dotenv strips quotes on
+    its own; this covers the case where the variable arrives from somewhere that does not.
     """
     key = explicit or os.environ.get("EIA_API_KEY")
+    if key:
+        key = key.strip().strip("\"'").strip()
     if not key:
         raise EIAError(
             "No EIA API key. Set EIA_API_KEY in .env or pass api_key=. "
@@ -197,10 +208,15 @@ def fetch_demand(
     return [by_period[p] for p in sorted(by_period)]
 
 
-def _request(http: requests.Session, params: dict[str, Any], timeout: float) -> dict[str, Any]:
+def _request(
+    http: requests.Session,
+    params: dict[str, Any],
+    timeout: float,
+    url: str = BASE_URL,
+) -> dict[str, Any]:
     """One request. Unwraps EIA's `{"response": {...}}` envelope and keeps the key out of logs."""
     try:
-        resp = http.get(BASE_URL, params=params, timeout=timeout)
+        resp = http.get(url, params=params, timeout=timeout)
     except requests.RequestException as exc:
         raise EIAError(f"Request to EIA failed: {type(exc).__name__}: {exc}") from exc
 
@@ -221,6 +237,97 @@ def _request(http: requests.Session, params: dict[str, Any], timeout: float) -> 
         # A warnings-only body usually means the facets matched nothing.
         raise EIAError(f"Unexpected envelope, keys={sorted(body)}: {str(body)[:300]}")
     return body["response"]
+
+
+def fetch_subba_demand(
+    parent: str,
+    start: datetime,
+    end: datetime,
+    *,
+    subbas: list[str] | None = None,
+    api_key: str | None = None,
+    session: requests.Session | None = None,
+    timeout: float = 60.0,
+    max_pages: int = 200,
+) -> list[dict[str, Any]]:
+    """Fetch hourly demand for a parent BA's **subregions**.
+
+    Separate route from `fetch_demand`, which is the discovery that matters here: the
+    `region-data` route returns nothing for PGAE/SCE/SDGE/VEA, because sub-balancing
+    authorities live on `region-sub-ba-data` with facets `parent` and `subba` instead of
+    `respondent` and `type`. Querying the wrong route returns an empty result rather than
+    an error, which would look like "CAISO sub-areas have no data" and quietly undermine
+    the hierarchical model in CLAUDE.md section 6.
+
+    There is no `type` facet here - the route publishes demand only, so no DF benchmark
+    exists at subregion level.
+
+    Deduplication is on (subba, period_utc), not period alone: one period carries one row
+    per subregion, so deduplicating on period would discard three of every four rows.
+
+    Records carry `parent_region` so the hierarchy is explicit in the data, which is what
+    MinT reconciliation needs to build its summation matrix.
+    """
+    key = resolve_api_key(api_key)
+    first = require_utc(start)
+    last = require_utc(end)
+    own_session = session is None
+    http = session or _session()
+
+    params: dict[str, Any] = {
+        "api_key": key,
+        "frequency": "hourly",
+        "data[0]": "value",
+        "facets[parent][]": parent.upper(),
+        "start": format_eia_period(first),
+        "end": format_eia_period(last),
+        "sort[0][column]": "period",
+        "sort[0][direction]": "asc",
+        "length": MAX_ROWS_PER_REQUEST,
+    }
+    if subbas:
+        for i, code in enumerate(subbas):
+            params[f"facets[subba][{i}]"] = code.upper()
+
+    fetched_at = datetime.now(UTC)
+    by_key: dict[tuple[str, datetime], dict[str, Any]] = {}
+    offset = 0
+    total: int | None = None
+
+    try:
+        for page in range(max_pages):
+            payload = _request(http, {**params, "offset": offset}, timeout, url=SUBBA_URL)
+            rows = payload.get("data")
+            if rows is None:
+                raise EIAError(f"Response had no 'data' key: {sorted(payload)}")
+            if total is None:
+                total = int(payload.get("total", len(rows)) or 0)
+                log.info("%s subregions: %d rows available", parent, total)
+
+            for row in rows:
+                period = parse_eia_period(row["period"])
+                subba = row["subba"]
+                by_key[(subba, period)] = {
+                    "region": subba,
+                    "parent_region": parent.upper(),
+                    "period_utc": period,
+                    "demand_mw": _coerce_value(row.get("value")),
+                    "data_type": DEMAND,
+                    "fetched_at": fetched_at,
+                }
+
+            offset += len(rows)
+            if not rows or offset >= total:
+                break
+            if page == max_pages - 1:
+                raise EIAError(
+                    f"Hit max_pages={max_pages} with {offset}/{total} rows for {parent} subregions."
+                )
+    finally:
+        if own_session:
+            http.close()
+
+    return [by_key[k] for k in sorted(by_key, key=lambda k: (k[1], k[0]))]
 
 
 def fetch_many(
