@@ -25,7 +25,7 @@ decision, not plumbing.
 from __future__ import annotations
 
 import functools
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import holidays
 
@@ -67,6 +67,40 @@ def holiday_name(moment: datetime, region: str) -> str | None:
     local = local_date(moment, get(region).timezone)
     year = int(local[:4])
     return holiday_calendar(region, [year]).get(local)
+
+
+MAJOR_HOLIDAYS = frozenset(
+    {
+        "New Year's Day",
+        "Memorial Day",
+        "Independence Day",
+        "Labor Day",
+        "Thanksgiving Day",
+        "Christmas Day",
+    }
+)
+"""Federal holidays on which most businesses close, so demand drops noticeably. The rest of
+the federal and state calendar (MLK Day, Veterans Day, Cesar Chavez Day, commemorative days
+like Susan B. Anthony Day) closes government offices and banks but little else."""
+
+
+def major_holiday_dates(years: list[int]) -> set[date]:
+    """Dates on which most businesses close, the same for every region.
+
+    The six `MAJOR_HOLIDAYS` on their observed dates, plus the day after Thanksgiving.
+    That Friday is not a federal holiday, but load behaves like one. Computed from the
+    federal calendar rather than matched by name, because state calendars disagree on what
+    to call it ("Day After Thanksgiving", "Friday After Thanksgiving") or omit it entirely.
+    """
+    federal = _calendar(None, tuple(sorted(set(years))))
+    out: set[date] = set()
+    for day, name in federal.items():
+        base = name.removesuffix(" (observed)")
+        if base in MAJOR_HOLIDAYS:
+            out.add(day)
+        if base == "Thanksgiving Day":
+            out.add(day + timedelta(days=1))
+    return out
 
 
 def holiday_dates(region: str, years: list[int]) -> dict[date, str]:

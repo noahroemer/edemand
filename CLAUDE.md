@@ -212,8 +212,15 @@ demand-forecast/
 ## 9. Key schemas
 
 `gold.features` — one row per `(region, period_utc)`: `region`, `period_utc`, `demand_mw`,
-lag features (24h, 168h), rolling means/stds, `temp_c`, `humidity`, `hour_local`, `dow`,
+lag features (48h, 168h), rolling means/stds, `temp_c`, `humidity`, `hour_local`, `dow`,
 `month`, `is_holiday`, Fourier terms, `has_gap` flag.
+
+**Decided (2026-10-10): demand lags are 48h and 168h, not 24h.** The forecast is issued at
+13:00 UTC (06:00 PDT) for the next UTC day, so target hours run up to 34h past issue time.
+A 24h lag for any target hour after about 13:00 UTC points at an hour that hasn't happened
+yet at issue time. Backtests would look better than production could ever be. Rolling
+statistics must also end at least 48h before the target hour. The 48h minimum assumes EIA
+publishes each hour within about 14h. Measure the real delay once the daily job runs.
 
 Prediction log — written on every served forecast:
 
@@ -282,7 +289,7 @@ question 1 is resolved.
   or the Databricks PAT. `.databrickscfg` lives outside the repo.
 - Commit messages: conventional commits (`feat:`, `fix:`, `chore:`).
 - MLflow: `set_tracking_uri("databricks")`, `set_registry_uri("databricks-uc")`.
-  Registered model names are three-level: `main.default.demand_forecast`.
+  Registered model names are three-level: `workspace.default.demand_forecast` (see §13 q3).
 
 ## 13. Open questions — resolve before building
 
@@ -299,14 +306,10 @@ These two answers change the design. Do not build past day 1 without them.
 2. **Do `pymc`, `pygam`, `statsmodels`, and `properscoring` install on serverless?** Test
    with `%pip install` in a notebook. If PyMC will not install or is too slow, fall back to
    NumPyro, or reduce the spline basis / shorten the training history.
-3. **Which Unity Catalog catalog?** §12 specifies `main.default.demand_forecast`, but this
-   workspace has no `main` catalog — `SHOW CATALOGS` returns only `samples`, `system`,
-   `workspace`, and `current_catalog()` is `workspace`. The bronze/silver/gold schemas do
-   not exist yet either (`workspace` holds only `default` and `information_schema`).
-   Proposed resolution: `workspace.{bronze,silver,gold}` for tables and
-   `workspace.default.demand_forecast` for the registered model. **Not yet agreed — must be
-   settled before the day-7 registry work.** `.env.example` already defaults
-   `UC_CATALOG=workspace`.
+3. **Which Unity Catalog catalog?** **Decided (2026-10-06): `workspace`.** This workspace has
+   no `main` catalog (`SHOW CATALOGS` returns only `samples`, `system`, `workspace`), so
+   tables live in `workspace.{bronze,silver,gold}` and the registered model is
+   `workspace.default.demand_forecast`. `.env.example` defaults `UC_CATALOG=workspace`.
 
 ## 14. Risks
 
@@ -318,6 +321,35 @@ These two answers change the design. Do not build past day 1 without them.
 | Weather leakage in backtests | Use archived forecasts, or disclose in README |
 | Free Edition quotas / account deletion | Everything reproducible from this repo |
 | Scope creep to all 65+ balancing authorities | Ship 10 regions solid first; expand only if time remains |
+
+## 14a. Improvement backlog (after the baseline)
+
+Ideas deliberately deferred so the baseline ships first. Each one is tried only after the
+baseline exists, and kept only if the walk-forward backtest shows it helps. Record the
+measured effect in the README either way.
+
+- **Multi-point weather for large regions.** Each region currently uses one weather point
+  (`ingest/regions.py`), which is crude for MISO, PJM, CISO, SWPP and ERCO. Upgrade to 3–5
+  points weighted by metro-area population. Trigger: error by region is clearly worse for
+  the large regions than for compact ones (LDWP, NYIS). CISO and LDWP currently share the
+  same Los Angeles point.
+- **Weight degree-hours, not temperatures.** When combining several points, average
+  heating and cooling degree-hours (base 18 °C) rather than raw temperature. Demand responds
+  to temperature in a U shape, so averaging a cold city and a mild one hides the heating load.
+- **Solar radiation and cloud cover, especially for CISO.** Rooftop solar lowers measured
+  grid demand on sunny afternoons. Open-Meteo provides `shortwave_radiation` and
+  `cloud_cover`. Adding them is a change to `DEFAULT_VARIABLES` in `ingest/open_meteo.py`.
+- **"Most recent available" same-hour lag.** One feature that uses demand from 24h back
+  when that hour is already published at issue time, and 48h back otherwise. Fresher than a
+  flat 48h lag for early target hours, still leak-free. Needs EIA's real publishing delay
+  measured first, and must account for the issue time shifting between 13:00 and 14:00 UTC
+  with daylight saving. Compare against `lag_48h` in the backtest.
+- **Lagged temperature (e.g. 3h ago).** In CISO, July 2024, temperature peaks around
+  15:00 local but demand peaks around 17:00–18:00, because buildings heat up slowly and
+  people run AC after they get home. A lagged temperature feature would capture that delay.
+- **Not doing: population and income as model features.** They don't vary hourly, the
+  per-region models already absorb each region's level, and 10 regions is too few to learn
+  their effect. Population is used only for weighting weather points.
 
 ## 15. Definition of done
 

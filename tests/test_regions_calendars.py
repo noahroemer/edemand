@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -101,3 +101,23 @@ class TestHolidays:
         a = calendars.holiday_calendar("CISO", [2024])
         b = calendars.holiday_calendar("CISO", [2024])
         assert a is b, "repeated lookups should hit the lru_cache"
+
+
+class TestMajorHolidays:
+    def test_includes_day_after_thanksgiving(self):
+        major = calendars.major_holiday_dates([2024])
+        assert date(2024, 11, 28) in major  # Thanksgiving
+        assert date(2024, 11, 29) in major  # the Friday after, not a federal holiday
+
+    def test_uses_observed_date(self):
+        # July 4, 2026 is a Saturday, so businesses close on Friday July 3.
+        assert date(2026, 7, 3) in calendars.major_holiday_dates([2026])
+
+    def test_excludes_minor_and_commemorative_days(self):
+        major = calendars.major_holiday_dates([2024])
+        assert date(2024, 1, 15) not in major  # MLK Day
+        assert date(2024, 2, 15) not in major  # Susan B. Anthony Day (CA, commemorative)
+        assert date(2024, 11, 11) not in major  # Veterans Day
+
+    def test_seven_dates_in_a_typical_year(self):
+        assert len(calendars.major_holiday_dates([2024])) == 7
