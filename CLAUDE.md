@@ -244,6 +244,21 @@ able to join predictions to actuals later.
 - `GET /predict?region=CISO` — 24 rows of `{target_time, q10, q50, q90, model_version}`
 - `GET /metrics` — recent rolling error and coverage
 
+**Missing inputs at serving time (decided 2026-10-10, to be built on day 7).** EIA sometimes
+publishes no demand for a whole local day, and several of these days fall on DST
+transitions (e.g. PJM on 2024-03-10, confirmed blank at the source). A regression-style model
+can't predict with a missing input, so when a lag feature is null at issue time:
+
+1. Use the **same hour on the most recent earlier day that has data** (72h back, then 96h,
+   and so on). This keeps the hour-of-day shape, which a rolling mean throws away (a 168h
+   mean runs 15–20% low at the 5 PM peak).
+2. Use the rolling mean only as a last resort, if several days in a row are missing.
+3. Log every fallback in the prediction log so its effect can be scored.
+
+Validate on day 7 with a backtest: blank out lags on some days, fill them each way, and
+compare error. Next DST change is 2026-11-01, inside the monitoring window, so it's a live
+test.
+
 ## 11. Build order and milestones
 
 Deploy a trivial baseline end to end early. Never be in a position of having a good model

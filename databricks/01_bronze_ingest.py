@@ -21,11 +21,12 @@ spark.sql("""
 """)
 
 # 2. Call the API (runs on your laptop).
-rows = eia.fetch_many(
-    list(regions.REGIONS),  # the 10 region codes: CISO, ERCO, PJM, ...
-    datetime(2024, 1, 1, tzinfo=UTC),
-    datetime(2024, 12, 31, 23, tzinfo=UTC),
-)
+# From the start of 2023 up to the current hour. Rerunning re-fetches hours already loaded,
+# which is how EIA revisions get picked up; the MERGE below makes that safe.
+START = datetime(2023, 1, 1, tzinfo=UTC)
+END = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+print(f"fetching demand {START:%Y-%m-%d} to {END:%Y-%m-%d %H:00} UTC")
+rows = eia.fetch_many(list(regions.REGIONS), START, END)  # the 10 region codes
 print(f"fetched {len(rows)} rows")
 
 # Row count per region, so a short region (missing hours) stands out.
