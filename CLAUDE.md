@@ -89,6 +89,20 @@ Initial region set (10): CISO, ERCO, PJM, MISO, NYIS, ISNE, BPAT, SWPP, FPL, LDW
 
 CAISO sub-areas for the hierarchical model: PGAE, SCE, SDGE, VEA.
 
+**LDWP data quality (decided 2026-10-12): keep all 10 regions, report LDWP separately.**
+LDWP's published demand is materially worse than the other nine. Seasonal-naive scores
+31.5% MAPE there against 6–11% everywhere else, and 553 hours of 2024 (6.3% of the year)
+fall below 20% of its own median, including stretches pinned near 175–250 MW against a
+2,503 MW median. That is bad data, not a hard region.
+
+It stays in the region set, but:
+
+- Any cross-region average must be reported both with and without LDWP, or LDWP alone will
+  dominate it and the results table will read as incompetent rather than honest.
+- The README limitations section names LDWP explicitly as a data-quality caveat.
+- Do not tune modeling choices to improve LDWP. Its error is dominated by source data, so
+  gains there measure nothing.
+
 **Non-negotiable data conventions:**
 
 - Store everything in UTC. Convert to local time only when building calendar features.
@@ -175,6 +189,59 @@ time only forecast weather is available. Either train and evaluate against archi
 weather forecasts, or state this limitation explicitly in the README. Do not quietly
 report the optimistic number.
 
+### 7a. Measured findings on the seasonal-naive benchmark (2026-10-12)
+
+From `databricks/eda_naive_error.py`, `eda_naive_extremes.py` and `eda_naive_dst.py`, CISO
+unless stated. These are measurements, not estimates, and they shape the §7 regime
+breakouts.
+
+**Every heat wave costs seasonal-naive twice, a week apart, with opposite signs.** Because
+the forecast is last week's value, a heat wave is first under-forecast on arrival and then
+over-forecast seven days later when the heat has gone. September 2026 shows the pair
+cleanly: +10,735 MW bias on 09-09 (40.5 °C, 49,959 MW peak), then −11,109 MW on 09-16
+(28.1 °C). The same pattern repeats in September 2024. This is structural, not incidental:
+since `e_t = y_t − y_{t−168}`, the term `y_t` enters `e_t` positively and `e_{t+168}`
+negatively, so naive errors are negatively autocorrelated at lag 168 by construction. Two
+consequences: the heat-wave regime in §7 is load-bearing, and the Diebold-Mariano tests must
+use a HAC (Newey–West) variance estimator, because hourly loss differentials are strongly
+dependent and treating them as independent would badly overstate significance.
+
+**September is the hardest month, but quote a range, not a point.** 11.99% MAPE against a
+4–8% norm. It is hard three ways at once: systematically (negative bias in all four years,
+from the cooling-season decline), broadly (highest *median* hourly error of any month, 2,350
+MW, so not merely tail-driven), and episodically (7.85% in 2025 versus 15.87% in 2026). With
+only four Septembers, the maximum of twelve monthly estimates is biased upward by selection,
+so any single September figure is unreliable.
+
+**DST misalignment is real at the hour level but does not raise aggregate error.**
+`lag_168h` steps back 168 hours of UTC, which equals one week of local clock time only while
+the offset holds. For the seven days after a transition the benchmark compares against a
+different local hour, and the signed effect is exactly as the mechanism predicts: after
+spring forward it reaches an hour earlier and under-forecasts (+745 to +1,151 MW at hours
+7–9); after fall back it reaches an hour later and over-forecasts (−1,081 to −1,597 MW at the
+same hours). The damage concentrates in the **morning** ramp, not the evening — DST
+transitions fall in mild months where there is no AC-driven evening peak, so the steepest
+hourly change is 7–9am.
+
+But aggregate error does *not* rise: 5.80% in spring-transition weeks and 4.13% in
+fall-transition weeks, against 6.76% for aligned weeks. That comparison is confounded —
+misaligned rows only ever occur in mid-March and early November. Against the correct
+baseline (March 5.86%, November 4.31%) the effect is approximately zero. Eight of ten
+regions show `penalty_x` below 1.0. **Report the null, with the mechanism and the
+confounder.** Do not claim DST degrades the benchmark.
+
+**Error does not track demand level.** CISO demand peaks at hour 20 (29,400 MW) but error
+peaks at hour 17 (2,857 MW MAE, 10.39% MAPE, versus 7.72% at hour 20). Hour 17 is harder
+despite being smaller, because behind-the-meter solar is collapsing and is highly sensitive
+to cloud cover, while by hour 20 solar variability is zero. Hard hours run ~2.5× the easy
+hours (5–7am, ~4.2%). Two implications: naive prediction intervals must be stratified by
+local hour, and the §14a solar-radiation item is now evidence-backed rather than
+speculative.
+
+**Verified as a side effect:** gold's `lag_168h` equals the demand exactly 168 hours earlier
+in every row checked (`lag_mismatches = 0`), so the window function in `03_gold_features.py`
+is stepping the intended distance.
+
 ## 8. Repo layout
 
 ```
@@ -189,6 +256,9 @@ demand-forecast/
 │   ├── 05_train_caiso_bayes.py# PyMC + MinT + conformal
 │   ├── 06_backtest.py         # walk-forward -> Delta metrics table
 │   ├── 07_monitor.py          # Spark SQL rolling CRPS/coverage/drift
+│   ├── eda_naive_error.py     # EDA, named outside the numbered sequence
+│   ├── eda_naive_extremes.py  # mean vs median: broad difficulty or tail events
+│   ├── eda_naive_dst.py       # DST misalignment, measured not hardcoded
 │   └── databricks.yml         # Asset Bundle - jobs as code
 ├── service/
 │   ├── api.py                 # FastAPI app
