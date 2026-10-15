@@ -14,9 +14,7 @@ bounds = bronze.groupBy("region").agg(
 # One row per region per hour between start and end.
 grid = bounds.select(
     "region",
-    F.explode(
-        F.sequence("start", "end", F.expr("INTERVAL 1 HOUR"))
-    ).alias("period_utc"),
+    F.explode(F.sequence("start", "end", F.expr("INTERVAL 1 HOUR"))).alias("period_utc"),
 )
 
 
@@ -35,4 +33,6 @@ silver.groupBy("region").agg(
 
 silver.write.mode("overwrite").saveAsTable("workspace.silver.demand")
 
-spark.sql("SELECT COUNT(*) AS n, SUM(CAST(has_gap AS INT)) AS gaps FROM workspace.silver.demand").show()
+spark.sql(
+    "SELECT COUNT(*) AS n, SUM(CAST(has_gap AS INT)) AS gaps FROM workspace.silver.demand"
+).show()
