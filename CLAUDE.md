@@ -184,6 +184,23 @@ by region.
 Walk-forward CV only. No random K-fold on time series, ever. All models must be scored on
 identical folds so comparisons are fair.
 
+**Backtest design (decided 2026-10-15), implemented in `databricks/06_backtest.py`:**
+
+- **21 monthly folds, expanding window.** Test months 2025-01 → 2026-09. Each fold trains on
+  everything from 2023-01-01 up to 48h before its test month starts (the same 48h embargo as
+  the lags), and refits once. Fold definitions live in `workspace.gold.backtest_folds` and
+  every model reads them from there.
+- **Every model outputs 19 quantiles** per hour (τ = 0.05, 0.10, …, 0.95). q10/q50/q90 are
+  the served quantiles.
+- **CRPS** is approximated from the quantiles as 2 × mean pinball loss over the 19 levels.
+  Also reported: pinball loss at the served quantiles, 80% coverage (q10–q90), mean 80%
+  width, MAPE on q50, bias.
+- **Scored rows:** `has_gap` false, target > 0, and the model's required inputs present.
+  Cross-region averages are reported with and without LDWP (§4).
+- **Outputs:** `workspace.gold.backtest_predictions` (model, fold, region, hour, 19
+  quantiles, actual) and `workspace.gold.backtest_metrics` (per model × fold × region). Each
+  model replaces only its own rows, so models can be rerun independently.
+
 **Leakage warning:** backtests that use actual weather are optimistic, because at serving
 time only forecast weather is available. Either train and evaluate against archived
 weather forecasts, or state this limitation explicitly in the README. Do not quietly
@@ -237,6 +254,35 @@ to cloud cover, while by hour 20 solar variability is zero. Hard hours run ~2.5�
 hours (5–7am, ~4.2%). Two implications: naive prediction intervals must be stratified by
 local hour, and the §14a solar-radiation item is now evidence-backed rather than
 speculative.
+
+**Seasonal-naive intervals: volatility-scaled, 7-day window (decided 2026-10-15).** From
+`eda_naive_intervals.py` → `eda_naive_drift.py` → `eda_naive_seasonal.py` →
+`eda_naive_volscaled.py`, one train/test split (train 2023–24, test 2025-01 → 2026-09):
+
+    q_τ(t) = lag_168h(t) + σ(t) · z_τ(region, hour_local)
+
+σ(t) is the mean |naive error| over the 7 days ending 48h before t (known at issue time).
+z_τ are quantiles of the standardised error e/σ, learned on training data only.
+
+| Method | Mean \|coverage − 80\| over 21 months | Worst − best month |
+| --- | --- | --- |
+| Empirical offsets per (region, hour) | 8.85 pts | 36.7 pts |
+| Best calendar stratification (season / month) | 7.29 | 24.8 |
+| Volatility-scaled, 7-day σ | **2.35** | **10.9** |
+| Volatility-scaled, 28-day σ | 4.16 | 18.9 |
+| Volatility-scaled, 56-day σ | 6.32 | 25.3 |
+
+Why it works: raw error spread grew 17% from train to test (demand growth), but the
+standardised z spread changed by 0.6% (3.548 → 3.571). Scale moves with recent conditions;
+shape is stable. The two Augusts that calendar methods could not fix (53.2% and 77.5% under
+hour offsets) both land near 80% (78.6%, 81.2%), and every region lands at 78.7–81.9%.
+
+Caveats to state in the README: (1) better coverage is partly bought with width (e.g. PJM's
+mean 80% width rises from 25.4k to 31.7k MW at 28 days); CRPS in the 21-fold backtest is the
+arbiter of that trade. (2) The window length was picked by comparing three options on the
+same test months, a mild selection effect. The gap is large, and 7 days is now fixed in
+advance of the backtest. The same scale × shape idea (normalised conformal prediction) is
+the plan for the GAM's intervals too.
 
 **Verified as a side effect:** gold's `lag_168h` equals the demand exactly 168 hours earlier
 in every row checked (`lag_mismatches = 0`), so the window function in `03_gold_features.py`
