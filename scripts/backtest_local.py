@@ -38,8 +38,10 @@ OUT = DATA / "local_predictions.parquet"
 MODELS = {
     "seasonal_naive": naive.fit_predict,
     "gam": gam.fit_predict,  # predicts with actual weather: optimistic
-    "gam_fcst": partial(gam.fit_predict, weather="forecast"),  # honest: forecast as issued
+    "gam_hf": partial(gam.fit_predict, weather="temp_c_hf"),  # historical_forecast: ~actual
+    "gam_fcst": partial(gam.fit_predict, weather="temp_c_pd1"),  # forecast a day earlier: honest
 }
+FORECAST_COLUMNS = {"historical_forecast": "temp_c_hf", "previous_day1": "temp_c_pd1"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,10 +59,16 @@ def show(df: pd.DataFrame, title: str) -> None:
 
 
 def run(args: argparse.Namespace) -> pd.DataFrame:
+    # Forecast weather arrives long (one row per region, source, hour); widen it to one
+    # temperature column per source, so each model variant just names the column it uses.
+    forecasts = (
+        pd.read_parquet(DATA / "forecast_weather.parquet")
+        .pivot_table(index=["region", "period_utc"], columns="source", values="temp_c")
+        .rename(columns=FORECAST_COLUMNS)
+        .reset_index()
+    )
     gold = pd.read_parquet(DATA / "gold_features.parquet").merge(
-        pd.read_parquet(DATA / "forecast_weather.parquet")[["region", "period_utc", "temp_c_fc"]],
-        on=["region", "period_utc"],
-        how="left",
+        forecasts, on=["region", "period_utc"], how="left"
     )
     folds = [
         Fold.from_row(r) for r in pd.read_parquet(DATA / "backtest_folds.parquet").itertuples()

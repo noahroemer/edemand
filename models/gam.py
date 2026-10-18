@@ -64,16 +64,17 @@ def fit(df: pd.DataFrame, fold: Fold) -> tuple[LinearGAM, pd.DataFrame]:
 
 
 def fit_predict(
-    df: pd.DataFrame, fold: Fold, taus: np.ndarray = TAUS, weather: str = "archive"
+    df: pd.DataFrame, fold: Fold, taus: np.ndarray = TAUS, weather: str = "temp_c"
 ) -> pd.DataFrame:
-    """weather picks the temperature used at PREDICTION time. Training always uses archive
-    (actual) weather, as production would.
+    """weather names the temperature column used at PREDICTION time. Training always uses
+    temp_c (actual weather), as production would.
 
-        "archive"   predict with actual weather too. Optimistic: at issue time tomorrow's
-                    weather is only a forecast (CLAUDE.md section 7 leakage warning).
-        "forecast"  predict with the archived forecast (df needs a temp_c_fc column). The
-                    calibration residuals then carry forecast error as well, so the
-                    intervals widen for it, as they would in production.
+        "temp_c"      predict with actual weather too. Optimistic: at issue time tomorrow's
+                      weather is only a forecast (CLAUDE.md section 7 leakage warning).
+        "temp_c_pd1"  predict with the forecast issued a day earlier (Previous Runs API).
+                      The honest number. Calibration residuals then carry forecast error as
+                      well, so the intervals widen for it, as they would in production.
+        "temp_c_hf"   Open-Meteo historical_forecast, kept to show it behaves like actual.
     """
     gam, rows = fit(df, fold)
     calib_start = fold.train_end - pd.Timedelta(days=CALIBRATION_DAYS)
@@ -83,11 +84,9 @@ def fit_predict(
     # rows between train_end and test_start are not trained on, but their residuals are
     # known 48h later, which is exactly when sigma uses them.
     series = rows[(rows.period_utc >= calib_start) & (rows.period_utc < fold.test_end)].copy()
-    if weather == "forecast":
-        series["temp_c"] = series.temp_c_fc
+    if weather != "temp_c":
+        series["temp_c"] = series[weather]
         series = series.dropna(subset=["temp_c"])
-    elif weather != "archive":
-        raise ValueError(f"weather must be 'archive' or 'forecast', not {weather!r}")
     series["yhat"] = gam.predict(series[FEATURES].to_numpy())
     series["error"] = series.demand_mw - series.yhat
     series["sigma"] = rolling_sigma(series.period_utc, series.error.abs())

@@ -3,8 +3,8 @@ Databricks Free Edition compute (the quota has run out twice).
 
 Writes to data/ (gitignored):
     gold_features.parquet         workspace.gold.features
-    forecast_weather.parquet      historical_forecast rows of silver.weather, for the
-                                  archive-vs-forecast weather ablation (CLAUDE.md section 7)
+    forecast_weather.parquet      forecast-source rows of silver.weather (historical_forecast,
+                                  previous_day1), for the weather-leakage ablation (section 7)
     backtest_folds.parquet        the 21 fold definitions every model must use
     naive_predictions.parquet     seasonal-naive backtest output, to compare against
 
@@ -26,14 +26,10 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 EXPORTS = {
     "gold_features": spark.table("workspace.gold.features"),
+    # Forecast weather sources, long format: one row per (region, source, hour).
     "forecast_weather": spark.table("workspace.silver.weather")
-    .where(F.col("source") == "historical_forecast")
-    .select(
-        "region",
-        "period_utc",
-        F.col("temp_c").alias("temp_c_fc"),
-        F.col("humidity_pct").alias("humidity_pct_fc"),
-    ),
+    .where(F.col("source").isin("historical_forecast", "previous_day1") & ~F.col("has_gap"))
+    .select("region", "source", "period_utc", "temp_c", "humidity_pct"),
     "backtest_folds": spark.table("workspace.gold.backtest_folds"),
     "naive_predictions": spark.table("workspace.gold.backtest_predictions")
     .where(F.col("model") == "seasonal_naive")

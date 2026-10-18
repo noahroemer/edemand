@@ -147,6 +147,31 @@ def test_each_endpoint_tags_its_own_source():
 
 
 @responses.activate
+def test_previous_day_maps_to_standard_columns_and_tags_source():
+    """Previous Runs variables arrive with a _previous_day1 suffix but must land in the same
+    temp_c / humidity_pct columns, so silver and gold treat every source identically."""
+    responses.add(
+        responses.GET,
+        om.PREVIOUS_RUNS_URL,
+        json={
+            "latitude": 34.05,
+            "longitude": -118.24,
+            "hourly": {
+                "time": ["2025-01-20T06:00"],
+                "temperature_2m_previous_day1": [-5.0],
+                "relative_humidity_2m_previous_day1": [61],
+            },
+        },
+        status=200,
+    )
+    rows = om.fetch_previous_day([LA], "2025-01-20", "2025-01-20")
+    assert rows[0]["temp_c"] == -5.0
+    assert rows[0]["humidity_pct"] == 61
+    assert rows[0]["source"] == "previous_day1"
+    assert "temperature_2m_previous_day1" in responses.calls[0].request.url
+
+
+@responses.activate
 def test_forecast_requests_two_days_by_default():
     """The 24h horizon issued at 06:00 local runs into the next calendar day."""
     responses.add(

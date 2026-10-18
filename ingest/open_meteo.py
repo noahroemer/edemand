@@ -53,7 +53,12 @@ the gold.features schema in CLAUDE.md section 9."""
 COLUMN_NAMES = {
     "temperature_2m": "temp_c",
     "relative_humidity_2m": "humidity_pct",
+    # Previous Runs API: same variables, as forecast N days before the hour.
+    "temperature_2m_previous_day1": "temp_c",
+    "relative_humidity_2m_previous_day1": "humidity_pct",
 }
+
+PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 
 ARCHIVE_LAG_DAYS = 5
 """ERA5 reanalysis lags real time by roughly this much. Requesting more recent dates
@@ -218,12 +223,12 @@ def fetch_historical_forecast(
     session: requests.Session | None = None,
     timeout: float = 120.0,
 ) -> list[dict[str, Any]]:
-    """Archived operational forecasts — what the forecast said at the time.
+    """Archived operational forecasts, stitched from the start of each model run.
 
-    This is the leakage-free training and evaluation input: it carries the same forecast
-    error the model will face at 06:00 serving time. Coverage starts around 2022, so it
-    buys honesty at the cost of history length. That tradeoff, and whichever way it is
-    resolved, belongs in the README per section 7.
+    **Not a day-ahead forecast.** Measured in the backtest (CLAUDE.md section 7): a GAM
+    predicting with this data scores the same as with actual weather (CRPS 1,223.7 vs
+    1,224.8), so its lead time is far shorter than the 11-34h our forecasts need. Use
+    `fetch_previous_day` to measure weather-forecast leakage instead.
     """
     return _fetch(
         HISTORICAL_FORECAST_URL,
@@ -231,6 +236,33 @@ def fetch_historical_forecast(
         {"start_date": start_date, "end_date": end_date},
         variables,
         source="historical_forecast",
+        session=session,
+        timeout=timeout,
+    )
+
+
+def fetch_previous_day(
+    coordinates: list[tuple[float, float]],
+    start_date: str,
+    end_date: str,
+    *,
+    session: requests.Session | None = None,
+    timeout: float = 120.0,
+) -> list[dict[str, Any]]:
+    """What the forecast said one day earlier, from Open-Meteo's Previous Runs API.
+
+    Each hour's value comes from the model run issued about 24h before the run that would
+    normally cover it, so the lead time is roughly 24-47h. Our day-ahead forecast (issued
+    13:00 UTC for the next UTC day) needs 11-34h, so this is slightly conservative: if
+    anything it overstates weather-forecast error. This is the honest evaluation input.
+    Coverage goes back to 2023 with a few percent of hours missing (more in 2024).
+    """
+    return _fetch(
+        PREVIOUS_RUNS_URL,
+        coordinates,
+        {"start_date": start_date, "end_date": end_date},
+        ("temperature_2m_previous_day1", "relative_humidity_2m_previous_day1"),
+        source="previous_day1",
         session=session,
         timeout=timeout,
     )

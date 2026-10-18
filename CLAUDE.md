@@ -206,6 +206,26 @@ time only forecast weather is available. Either train and evaluate against archi
 weather forecasts, or state this limitation explicitly in the README. Do not quietly
 report the optimistic number.
 
+**Weather leakage, measured (2026-10-17).** GAM trained on actual weather, scored on the
+21 folds with three different temperatures at prediction time (excl. LDWP, 137,800 hours):
+
+| Prediction-time weather | CRPS | vs seasonal-naive | MAPE | 80% coverage |
+| --- | --- | --- | --- | --- |
+| Actual (ERA5) | 1,224.8 | −52.3% | 4.53% | 76.0% |
+| Open-Meteo `historical_forecast` | 1,223.7 | −52.4% | 4.59% | 76.3% |
+| **Forecast issued a day earlier (`previous_day1`)** | **1,274.8** | **−50.4%** | **4.74%** | 76.3% |
+| Seasonal-naive (reference) | 2,570.3 | — | 8.55% | 79.9% |
+
+- `historical_forecast` scores like actual weather, so it **cannot measure leakage**: it is
+  stitched from the start of each forecast run, far shorter lead than our 11–34h. Do not
+  report it as the honest number.
+- `previous_day1` (Open-Meteo Previous Runs API, ~24–47h lead, MAE 1.52 °C against ERA5,
+  p99 miss 5.9 °C) is the honest input. **Report −50.4% as the headline**, and the gap to
+  actual weather (+4.1% CRPS, +0.21 pts MAPE) as the measured cost of weather-forecast error.
+- Its lead time is slightly longer than ours, so if anything it overstates the cost.
+- GAM coverage (76%) is still below 80% in every variant, worst in June folds. Separate
+  problem, being fixed next.
+
 ### 7a. Measured findings on the seasonal-naive benchmark (2026-10-12)
 
 From `databricks/eda_naive_error.py`, `eda_naive_extremes.py` and `eda_naive_dst.py`, CISO
