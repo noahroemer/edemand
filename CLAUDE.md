@@ -226,6 +226,28 @@ report the optimistic number.
 - GAM coverage (76%) is still below 80% in every variant, worst in June folds. Separate
   problem, being fixed next.
 
+**GAM intervals: 365-day calibration + refit (decided 2026-10-17).** The base construction
+(z learned on the last 90 days of training, held-out model used to forecast) covered 76%.
+`scripts/eda_gam_coverage.py` compared six variants with honest weather (excl. LDWP):
+
+| Variant | Coverage | Mean \|fold − 80\| | Worst fold | CRPS | Width |
+| --- | --- | --- | --- | --- | --- |
+| 90d calibration, z per hour (old default) | 76.3% | 4.40 | 65.5% | 1,274.8 | 5,310 |
+| z pooled across hours | 80.2% | 3.00 | 74.0% | 1,296.1 | 5,683 |
+| 365d calibration | 82.1% | 3.03 | 75.1% | 1,299.0 | 6,048 |
+| 365d + pooled | 82.1% | 2.85 | 76.2% | 1,316.4 | 6,031 |
+| refit only | 74.9% | 5.24 | 64.5% | 1,273.6 | 5,158 |
+| **365d calibration + refit (new default)** | **80.0%** | **2.45** | 73.7% | **1,256.7** | 5,551 |
+
+90 days captured one season's error shape (June folds learned from calm spring: 65–69%).
+365 days alone over-covered because the held-out model was a year stale. Learning the shape
+on a full year and then refitting for the forecast hits 80.0%, every region at 79.6–81.3%,
+and also gives the best CRPS (fresher model, MAPE 4.66%). June folds remain the weakest
+(73.7%, 76.2%): early-summer heat outruns the 7-day volatility scale. Say so in the README.
+
+**Headline with the new default:** GAM with day-ahead forecast weather, CRPS 1,256.7 vs
+2,570.3 for seasonal-naive (**51.1% better**), MAPE 4.66% vs 8.55%, coverage 80.0%.
+
 ### 7a. Measured findings on the seasonal-naive benchmark (2026-10-12)
 
 From `databricks/eda_naive_error.py`, `eda_naive_extremes.py` and `eda_naive_dst.py`, CISO
