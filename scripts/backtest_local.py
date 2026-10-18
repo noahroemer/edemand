@@ -75,7 +75,11 @@ def run(args: argparse.Namespace) -> pd.DataFrame:
     ]
     if args.folds:
         folds = [f for f in folds if f.fold in args.folds]
-    regions = args.regions or sorted(gold.region.unique())
+    # Default to the 10 balancing authorities. The CAISO sub-areas (parent_region = 'CISO')
+    # sit inside CISO, so including them would count California twice in every cross-region
+    # average. Name them with --regions to score them explicitly.
+    top_level = gold[gold.parent_region.isna()] if "parent_region" in gold else gold
+    regions = args.regions or sorted(top_level.region.unique())
 
     frames = []
     for name in args.models:

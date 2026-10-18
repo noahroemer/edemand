@@ -1,3 +1,4 @@
+import sys
 from datetime import UTC, datetime, timedelta
 
 from databricks.connect import DatabricksSession
@@ -19,25 +20,52 @@ spark.sql("""
     ) USING DELTA
 """)
 
-# Two sources, both from the start of 2023:
+# Three sources, all from the start of 2023:
 #   era5_archive        - what the weather actually was. Stops ARCHIVE_LAG_DAYS ago: Open-Meteo
 #                         fills the most recent days with forecast data (even for hours that
 #                         haven't happened yet), which must not be stored as "actual" weather.
-#   historical_forecast - what the forecast said at the time, for honest backtests (section 7).
-#                         Stops at the end of yesterday; future hours belong to the live forecast.
+#   historical_forecast - stitched from the start of each forecast run. Scores like actual
+#                         weather in the backtest, so it can't measure leakage. Kept for record.
+#   previous_day1       - what the forecast said one day earlier (~24-47h lead). The honest
+#                         input for backtests (section 7).
+# Forecast sources stop at the end of yesterday; future hours belong to the live forecast.
+#
+# Pass source names to load only those, e.g.  python databricks/01_bronze_weather.py previous_day1
 START_DATE = "2023-01-01"
 today = datetime.now(UTC).date()
-SOURCES = {
+yesterday = today - timedelta(days=1)
+ALL_SOURCES = {
     "era5_archive": (
         open_meteo.fetch_archive,
         today - timedelta(days=open_meteo.ARCHIVE_LAG_DAYS),
     ),
-    "historical_forecast": (open_meteo.fetch_historical_forecast, today - timedelta(days=1)),
+    "historical_forecast": (open_meteo.fetch_historical_forecast, yesterday),
+    "previous_day1": (open_meteo.fetch_previous_day, yesterday),
+}
+# Arguments are source names, region codes, or both, in any order. Naming regions matters
+# for backfills: adding the CAISO sub-areas should not re-fetch four years of weather for the
+# ten regions that already have it.
+#     python databricks/01_bronze_weather.py previous_day1
+#     python databricks/01_bronze_weather.py PGAE SCE SDGE VEA
+args = sys.argv[1:]
+unknown = [a for a in args if a not in ALL_SOURCES and a.upper() not in regions.ALL_REGIONS]
+if unknown:
+    raise SystemExit(
+        f"Unknown argument(s) {sorted(unknown)}. "
+        f"Sources: {sorted(ALL_SOURCES)}. Regions: {sorted(regions.ALL_REGIONS)}"
+    )
+SOURCES = {
+    name: ALL_SOURCES[name] for name in ([a for a in args if a in ALL_SOURCES] or ALL_SOURCES)
 }
 
 # One request per region, so every row is tagged with the region it was asked for.
 # (CISO and LDWP share coordinates, so lat/lon alone can't tell them apart.)
-codes = list(regions.REGIONS)
+# ALL_REGIONS, not REGIONS: the four CAISO sub-areas need their own weather. Their load
+# centers are genuinely different climates -- coastal San Diego, inland Pahrump -- which is
+# half the reason their temperature responses differ enough to be worth pooling rather than
+# merging. SCE's point (Pasadena) sits close to CISO's (LA basin) but is kept separate so
+# every region's weather is traceable to its own request.
+codes = [a.upper() for a in args if a.upper() in regions.ALL_REGIONS] or list(regions.ALL_REGIONS)
 rows = []
 for source, (fetch, end_date) in SOURCES.items():
     print(f"{source}, {START_DATE} to {end_date}")
