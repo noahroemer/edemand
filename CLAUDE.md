@@ -306,6 +306,12 @@ demand-forecast/
 │   ├── eda_naive_extremes.py  # mean vs median: broad difficulty or tail events
 │   ├── eda_naive_dst.py       # DST misalignment, measured not hardcoded
 │   └── databricks.yml         # Asset Bundle - jobs as code
+├── models/                    # pure pandas/numpy, no Spark import, so the same code runs
+│   ├── __init__.py            #   under applyInPandas and in the local harness
+│   ├── scoring.py             # TAUS, CRPS/pinball/coverage - one definition for all models
+│   ├── intervals.py           # volatility-scaled intervals (section 7a), scale x shape
+│   ├── naive.py               # seasonal-naive, the local twin of 06_backtest.py
+│   └── gam.py                 # pygam LinearGAM spec, fit, and calibrated quantiles
 ├── service/
 │   ├── api.py                 # FastAPI app
 │   ├── model_loader.py        # fetch registered artifact
@@ -314,7 +320,10 @@ demand-forecast/
 ├── tests/
 ├── scripts/
 │   ├── check_local_env.py     # day-0 environment doctor
-│   └── smoke.py               # serving-contract assertions, stdlib only
+│   ├── smoke.py               # serving-contract assertions, stdlib only
+│   ├── export_gold.py         # snapshot the modeling tables to data/*.parquet
+│   ├── backtest_local.py      # the 21-fold backtest in pandas, no Databricks compute
+│   └── gam_prototype.py       # one region, one fold, with term plots
 ├── docs/
 │   └── gcp-setup.md           # one-time WIF + Artifact Registry + Cloud Run setup
 ├── requirements-service.txt   # hash-locked image manifest (uv pip compile)
