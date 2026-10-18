@@ -248,6 +248,17 @@ and also gives the best CRPS (fresher model, MAPE 4.66%). June folds remain the 
 **Headline with the new default:** GAM with day-ahead forecast weather, CRPS 1,256.7 vs
 2,570.3 for seasonal-naive (**51.1% better**), MAPE 4.66% vs 8.55%, coverage 80.0%.
 
+**GAM heat terms (decided 2026-10-18), now the default.** Adding a temperature × hour-of-day
+tensor term and a trailing 24h mean temperature (`heat=True` in `models/gam.py`):
+
+| Excl. LDWP, honest weather | CRPS | vs naive | MAPE | Coverage | Heat-wave MAPE | Heat-wave coverage |
+| --- | --- | --- | --- | --- | --- | --- |
+| GAM without heat terms | 1,256.7 | −51.1% | 4.66% | 80.0% | 5.47% | 69.5% |
+| **GAM with heat terms** | **1,129.5** | **−56.1%** | **4.09%** | 79.8% | **3.99%** | 74.8% |
+
+Better in every region; ISNE heat-wave MAPE 10.6% → 5.7%. DM vs naive pooled 16.3. Holiday
+coverage fell to 63.3% (holiday MAPE improved, 5.7% → 5.4%). The README reports these numbers.
+
 ### 7a. Measured findings on the seasonal-naive benchmark (2026-10-12)
 
 From `databricks/eda_naive_error.py`, `eda_naive_extremes.py` and `eda_naive_dst.py`, CISO

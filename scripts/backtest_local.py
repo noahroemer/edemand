@@ -40,6 +40,7 @@ MODELS = {
     "gam": gam.fit_predict,  # predicts with actual weather: optimistic
     "gam_hf": partial(gam.fit_predict, weather="temp_c_hf"),  # historical_forecast: ~actual
     "gam_fcst": partial(gam.fit_predict, weather="temp_c_pd1"),  # forecast a day earlier: honest
+    "gam_noheat": partial(gam.fit_predict, weather="temp_c_pd1", heat=False),  # ablation
 }
 FORECAST_COLUMNS = {"historical_forecast": "temp_c_hf", "previous_day1": "temp_c_pd1"}
 

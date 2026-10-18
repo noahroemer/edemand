@@ -27,13 +27,15 @@ held-out model was a year stale; together they cover 80.0% with the best CRPS of
 
 import numpy as np
 import pandas as pd
-from pygam import LinearGAM, f, l, s
+from pygam import LinearGAM, f, l, s, te
 
 from models import Fold, usable
 from models.intervals import quantiles_from, rolling_sigma, z_quantiles
 from models.scoring import TAUS
 
 FEATURES = ["temp_c", "hour_of_week", "day_of_year", "is_major_holiday", "lag_168h", "lag_48h"]
+# heat=True adds a temperature x hour-of-day surface and a trailing 24h mean temperature.
+HEAT_FEATURES = [*FEATURES, "hour_local", "temp_mean_24h"]
 CALIBRATION_DAYS = 365  # a full year, so the z shape sees every season
 
 
@@ -43,12 +45,14 @@ def design(df: pd.DataFrame) -> pd.DataFrame:
     out["hour_of_week"] = out.dow * 24 + out.hour_local
     out["day_of_year"] = pd.to_datetime(out.local_date).dt.dayofyear
     out["is_major_holiday"] = out.is_major_holiday.astype(int)
+    out = out.sort_values("period_utc")
+    out["temp_mean_24h"] = out.temp_c.rolling(24, min_periods=1).mean()  # heat build-up
     return out
 
 
-def specification() -> LinearGAM:
-    """The model spec, unfitted. Term order matches FEATURES."""
-    return LinearGAM(
+def specification(heat: bool = False) -> LinearGAM:
+    """The model spec, unfitted. Term order matches FEATURES (or HEAT_FEATURES)."""
+    terms = (
         s(0, n_splines=15)  # temp_c
         + s(1, n_splines=60, basis="cp", edge_knots=[0, 168])  # hour_of_week, wraps 167 -> 0
         + s(2, n_splines=12, basis="cp", edge_knots=[1, 367])  # day_of_year, wraps Dec -> Jan
@@ -56,17 +60,23 @@ def specification() -> LinearGAM:
         + l(4)  # lag_168h
         + l(5)  # lag_48h
     )
+    if heat:
+        # Cooling load lands in the afternoon and evening: let temperature's effect vary by
+        # hour of day. And a hot day after hot days draws more than its own temperature says.
+        terms = terms + te(0, 6, n_splines=[8, 8]) + s(7, n_splines=10)
+    return LinearGAM(terms)
 
 
 def fit(
-    df: pd.DataFrame, fold: Fold, calibration_days: int = CALIBRATION_DAYS
+    df: pd.DataFrame, fold: Fold, calibration_days: int = CALIBRATION_DAYS, heat: bool = False
 ) -> tuple[LinearGAM, pd.DataFrame]:
     """Fit on everything up to `calibration_days` before train_end. Returns the model and the
     usable rows (designed and filtered), so callers can plot terms or build intervals."""
-    rows = usable(design(df), FEATURES)  # design first: three of FEATURES are derived
+    features = HEAT_FEATURES if heat else FEATURES
+    rows = usable(design(df), features)  # design first: several features are derived
     calib_start = fold.train_end - pd.Timedelta(days=calibration_days)
     window = rows[(rows.period_utc >= fold.train_start) & (rows.period_utc < calib_start)]
-    gam = specification().fit(window[FEATURES].to_numpy(), window.demand_mw.to_numpy())
+    gam = specification(heat).fit(window[features].to_numpy(), window.demand_mw.to_numpy())
     return gam, rows
 
 
@@ -78,6 +88,7 @@ def fit_predict(
     calibration_days: int = CALIBRATION_DAYS,
     z_by_hour: bool = True,
     refit: bool = True,
+    heat: bool = True,
 ) -> pd.DataFrame:
     """weather names the temperature column used at PREDICTION time. Training always uses
     temp_c (actual weather), as production would.
@@ -95,8 +106,12 @@ def fit_predict(
         z_by_hour         learn z per local hour (24 tables) or pooled across hours
         refit             after calibrating, refit on the full training window and use that
                           fresher model for the test-month point forecast and residuals
+        heat              temperature x hour-of-day surface plus trailing 24h mean temperature.
+                          On by default: CRPS 1,256.7 -> 1,129.5 and heat-wave MAPE 5.47% ->
+                          3.99% across 9 regions x 21 folds (CLAUDE.md section 7)
     """
-    gam, rows = fit(df, fold, calibration_days)
+    features = HEAT_FEATURES if heat else FEATURES
+    gam, rows = fit(df, fold, calibration_days, heat)
     calib_start = fold.train_end - pd.Timedelta(days=calibration_days)
 
     # Predict calibration and test as one continuous series so sigma -- which needs the
@@ -107,7 +122,8 @@ def fit_predict(
     if weather != "temp_c":
         series["temp_c"] = series[weather]
         series = series.dropna(subset=["temp_c"])
-    series["yhat"] = gam.predict(series[FEATURES].to_numpy())
+        series["temp_mean_24h"] = series.temp_c.rolling(24, min_periods=1).mean()
+    series["yhat"] = gam.predict(series[features].to_numpy())
     series["error"] = series.demand_mw - series.yhat
     series["sigma"] = rolling_sigma(series.period_utc, series.error.abs())
     series = series[series.sigma > 0]
@@ -122,8 +138,8 @@ def fit_predict(
         # Point forecast from a model trained right up to train_end. Its residuals feed sigma
         # for the test month; the z shape still comes from the held-out calibration above.
         full = rows[(rows.period_utc >= fold.train_start) & (rows.period_utc < fold.train_end)]
-        gam = specification().fit(full[FEATURES].to_numpy(), full.demand_mw.to_numpy())
-        series["yhat"] = gam.predict(series[FEATURES].to_numpy())
+        gam = specification(heat).fit(full[features].to_numpy(), full.demand_mw.to_numpy())
+        series["yhat"] = gam.predict(series[features].to_numpy())
         series["error"] = series.demand_mw - series.yhat
         series["sigma"] = rolling_sigma(series.period_utc, series.error.abs())
         series = series[series.sigma > 0]
